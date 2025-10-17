@@ -49,6 +49,7 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 const modalRoot = $('#modalRoot');
 const toastRoot = $('#toastRoot');
 
+/* showModal mejorado: en pantallas pequeñas aparece como bottom-sheet */
 function showModal({title='', html='', buttons=[]}){
   modalRoot.innerHTML = `<div class="modal-bg"><div class="modal"><div style="font-weight:700;margin-bottom:8px">${title}</div><div id="modalBody">${html}</div><div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px" id="modalBtns"></div></div></div>`;
   modalRoot.classList.remove('hidden');
@@ -164,6 +165,12 @@ function checkPlayersReady(){
   }
 }
 
+function onStateChange(e){
+  const s = e.data;
+  if(s === YT.PlayerState.PLAYING){ isPlaying = true; setPlayIcon(true); startProgressTimer(); showMini(true); spinVinyl(true); }
+  else if(s === YT.PlayerState.PAUSED){ isPlaying = false; setPlayIcon(false); stopProgressTimer(); spinVinyl(false); }
+  else if(s === YT.PlayerState.ENDED){ if(repeatMode === 'one'){ playCurrent(); } else { playNext(); } }
+}
 function onPlayerError(e){ console.warn('YT error', e); showToast('Error reproductor'); }
 
 /* robust loading: if players not ready, set pendingPlay */
@@ -223,8 +230,6 @@ function stopPlayback(){
   try{ visiblePlayer && visiblePlayer.stopVideo && visiblePlayer.stopVideo(); }catch(e){}
   try{ hiddenPlayer && hiddenPlayer.stopVideo && hiddenPlayer.stopVideo(); }catch(e){}
   isPlaying = false; setPlayIcon(false); stopProgressTimer(); spinVinyl(false);
-  // cerrar notificación persistente al detener (opcional)
-  try{ clearMediaNotification(); }catch(e){}
 }
 function togglePlayPause(){ const p = (videoShown && visiblePlayer && visiblePlayer.getPlayerState) ? visiblePlayer : hiddenPlayer; if(!p || typeof p.getPlayerState !== 'function') return; const s = p.getPlayerState(); if(s === YT.PlayerState.PLAYING) p.pauseVideo(); else p.playVideo(); }
 function setPlayIcon(playing){
@@ -232,49 +237,7 @@ function setPlayIcon(playing){
   const miniSvg = $('#miniPlayIcon');
   if(miniSvg) miniSvg.innerHTML = playing ? `<path d="M6 19h4V5H6v14zM14 5v14h4V5h-4z" fill="#111"></path>` : `<path d="M5 3v18l15-9L5 3z" fill="#111"></path>`;
 }
-
-/* =========================
-   onStateChange actualizado para también actualizar Media Session / Notificación
-   ========================= */
-function onStateChange(e){
-  const s = e.data;
-  if(s === YT.PlayerState.PLAYING){
-    isPlaying = true; setPlayIcon(true); startProgressTimer(); showMini(true); spinVinyl(true);
-    // actualizar media session & notificación
-    try{ updateMediaSessionInfo(currentTrack); updateMediaNotification(); }catch(e){}
-  }
-  else if(s === YT.PlayerState.PAUSED){
-    isPlaying = false; setPlayIcon(false); stopProgressTimer(); spinVinyl(false);
-    try{ updateMediaSessionInfo(currentTrack); updateMediaNotification(); }catch(e){}
-  }
-  else if(s === YT.PlayerState.ENDED){ if(repeatMode === 'one'){ playCurrent(); } else { playNext(); } }
-}
-
-/* startProgressTimer -> actualizado para setPositionState */
-function startProgressTimer(){
-  stopProgressTimer();
-  progressTimer = setInterval(()=>{
-    try{
-      const p = (videoShown && visiblePlayer && visiblePlayer.getCurrentTime) ? visiblePlayer : hiddenPlayer;
-      if(!p || !p.getDuration) return;
-      const dur = p.getDuration() || 0;
-      const cur = p.getCurrentTime() || 0;
-      const pct = dur > 0 ? (cur/dur)*100 : 0;
-      $('#progressBar').style.width = pct + '%';
-
-      // actualizar position state para lock-screen (si está soportado)
-      try{
-        if('mediaSession' in navigator && typeof navigator.mediaSession.setPositionState === 'function' && dur > 0){
-          navigator.mediaSession.setPositionState({
-            duration: dur,
-            playbackRate: 1,
-            position: cur
-          });
-        }
-      }catch(e){}
-    }catch(e){}
-  }, 400);
-}
+function startProgressTimer(){ stopProgressTimer(); progressTimer = setInterval(()=>{ try{ const p = (videoShown && visiblePlayer && visiblePlayer.getCurrentTime) ? visiblePlayer : hiddenPlayer; if(!p || !p.getDuration) return; const dur = p.getDuration() || 0; const cur = p.getCurrentTime() || 0; const pct = dur > 0 ? (cur/dur)*100 : 0; $('#progressBar').style.width = pct + '%'; }catch(e){} }, 400); }
 function stopProgressTimer(){ if(progressTimer) clearInterval(progressTimer); progressTimer=null; }
 
 /* vinyl spin */
@@ -289,7 +252,7 @@ function spinVinyl(on){
   } else { if(vinylInterval) clearInterval(vinylInterval); vinylInterval=null; el.style.transform='rotate(0deg)'; }
 }
 
-/* update UI + Media Session helper */
+/* update UI */
 function updateNowCard(track){
   if(!track) return;
   $('#nowTitle').textContent = track.title || 'No se reproduce';
@@ -299,12 +262,6 @@ function updateNowCard(track){
   $('#miniTitle').textContent = track.title || 'No se reproduce';
   $('#miniArtist').textContent = track.channel || '—';
   $('#miniPlayer').classList.remove('hidden');
-
-  // --- Actualizar Media Session y notificación ---
-  try{
-    updateMediaSessionInfo(track);
-    updateMediaNotification();
-  }catch(e){ console.warn('media update error', e); }
 }
 
 /* =====================
@@ -364,7 +321,7 @@ function escapeHtml(s){ return String(s || '').replace(/[&<>"']/g, c=>({'&':'&',
    Recents / favorites / playlists
    ===================== */
 
-
+   
 function addRecent(track){
   if(!track || !track.videoId) return;
   STORAGE.recent = STORAGE.recent.filter(t=>t.videoId !== track.videoId);
@@ -800,7 +757,8 @@ function updateShuffleButtonUI(){
   btn.classList.remove('toggle','active','inactive','shuffle-active');
   btn.classList.add('toggle');
   if(shuffle){
-    btn.classList.add('shuffle-active');
+    // si quieres verde para shuffle, usar 'active' en vez de 'shuffle-active'
+    btn.classList.add('shuffle-active'); // o 'active' para verde
     btn.classList.remove('inactive');
     btn.setAttribute('aria-pressed', 'true');
   } else {
@@ -822,10 +780,10 @@ function updateRepeatButtonUI(){
     btn.classList.add('inactive');
     btn.setAttribute('aria-pressed', 'false');
   } else if(repeatMode === 'all'){
-    btn.classList.add('repeat-all');
+    btn.classList.add('repeat-all'); // usará el estilo activo (verde)
     btn.setAttribute('aria-pressed', 'true');
   } else if(repeatMode === 'one'){
-    btn.classList.add('repeat-one');
+    btn.classList.add('repeat-one'); // estilo activo + badge '1'
     btn.setAttribute('aria-pressed', 'true');
   }
   btn.title = 'Repetir: ' + repeatMode;
@@ -1045,144 +1003,6 @@ document.addEventListener('visibilitychange', async ()=>{
   /* helper showMini */
   function showMini(show=true){ if(show) $('#miniPlayer').classList.remove('hidden'); else $('#miniPlayer').classList.add('hidden'); }
 
-
-  /* ==========================
-   MEDIA SESSION + NOTIFICATIONS (Lock-screen / Notification controls)
-   Debe estar dentro de DOMContentLoaded para acceder a variables como currentTrack/isPlaying
-   ========================== */
-
-  function updateMediaSessionInfo(track){
-    if(!('mediaSession' in navigator) || !track) return;
-    try{
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: track.title || 'MiPlayer',
-        artist: track.channel || '',
-        album: 'MiPlayer',
-        artwork: [
-          // varios tamaños para compatibilidad
-          { src: track.thumb || './icons/icon-192.png',   sizes: '96x96',   type: 'image/png'  },
-          { src: track.thumb || './icons/icon-192.png',   sizes: '128x128', type: 'image/png'  },
-          { src: track.thumb || './icons/icon-512.png',   sizes: '512x512', type: 'image/png'  }
-        ]
-      });
-
-      // playbackState = 'none' | 'paused' | 'playing'
-      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
-
-      // action handlers
-      try{ navigator.mediaSession.setActionHandler('play', ()=>{ togglePlayPause(); }); }catch(e){}
-      try{ navigator.mediaSession.setActionHandler('pause', ()=>{ togglePlayPause(); }); }catch(e){}
-      try{ navigator.mediaSession.setActionHandler('previoustrack', ()=>{ playPrev(); }); }catch(e){}
-      try{ navigator.mediaSession.setActionHandler('nexttrack', ()=>{ playNext(); }); }catch(e){}
-      try{
-        navigator.mediaSession.setActionHandler('seekbackward', (details)=>{
-          try{
-            const p = (videoShown && visiblePlayer && visiblePlayer.getCurrentTime) ? visiblePlayer : hiddenPlayer;
-            const cur = p && p.getCurrentTime ? p.getCurrentTime() : 0;
-            const skip = (details && details.seekOffset) ? details.seekOffset : 10;
-            if(p && p.seekTo) p.seekTo(Math.max(0, cur - skip), true);
-          }catch(e){}
-        });
-      }catch(e){}
-      try{
-        navigator.mediaSession.setActionHandler('seekforward', (details)=>{
-          try{
-            const p = (videoShown && visiblePlayer && visiblePlayer.getCurrentTime) ? visiblePlayer : hiddenPlayer;
-            const cur = p && p.getCurrentTime ? p.getCurrentTime() : 0;
-            const skip = (details && details.seekOffset) ? details.seekOffset : 10;
-            if(p && p.getDuration && p.seekTo){
-              const dur = p.getDuration() || 0;
-              p.seekTo(Math.min(dur, cur + skip), true);
-            }
-          }catch(e){}
-        });
-      }catch(e){}
-    }catch(err){
-      console.warn('updateMediaSessionInfo error', err);
-    }
-  }
-
-  /* Mostrar/actualizar notificación persistente con acciones (usa el Service Worker registrado) */
-  function updateMediaNotification(){
-    if(!currentTrack) return;
-    // pedir permiso si no está concedido
-    if(typeof Notification !== 'undefined' && Notification.permission !== 'granted'){
-      Notification.requestPermission().catch(()=>{});
-    }
-
-    if(!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.getRegistration().then(reg=>{
-      if(!reg) return;
-      const isPlay = !!isPlaying;
-      const title = currentTrack.title || 'MiPlayer';
-      const options = {
-        body: currentTrack.channel || '',
-        icon: currentTrack.thumb || './icons/icon-192.png',
-        badge: './icons/icon-192.png',
-        tag: 'miplayer-media',
-        renotify: true,
-        // requireInteraction mantiene la notificación visible hasta que el usuario la cierre (útil para controles)
-        requireInteraction: true,
-        silent: false,
-        data: { videoId: currentTrack.videoId || null },
-        actions: [
-          { action: 'prev', title: 'Anterior' },
-          { action: isPlay ? 'pause' : 'play', title: isPlay ? 'Pausar' : 'Reproducir' },
-          { action: 'next', title: 'Siguiente' }
-        ]
-      };
-      try{
-        reg.showNotification(title, options);
-      }catch(e){
-        console.warn('showNotification failed', e);
-      }
-    }).catch(err=>{ console.warn('getRegistration error', err); });
-  }
-
-  /* clear notification helper */
-  function clearMediaNotification(){
-    if(!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.getRegistration().then(reg=>{
-      if(!reg) return;
-      reg.getNotifications({tag:'miplayer-media'}).then(list=>{
-        list.forEach(n => { try{ n.close(); }catch(e){} });
-      }).catch(()=>{});
-    }).catch(()=>{});
-  }
-
-  /* Listener para recibir acciones desde el Service Worker (sw.js -> postMessage) */
-  if(navigator.serviceWorker){
-    navigator.serviceWorker.addEventListener('message', (ev)=>{
-      const d = ev.data || {};
-      if(d.type === 'media-action'){
-        const action = d.action;
-        // coincidir con los actions enviados por sw.notificationclick
-        if(action === 'play' || action === 'toggle') togglePlayPause();
-        else if(action === 'pause') togglePlayPause();
-        else if(action === 'next') playNext();
-        else if(action === 'prev' || action === 'previous') playPrev();
-        else if(action === 'focus') try{ window.focus(); }catch(e){}
-      }
-    });
-  }
-
-  /* Inicializador: pedir permiso notificaciones si posible (se puede comentar si no quieres auto-request) */
-  function initMediaControls(){
-    // no forzar permiso en todas las apps: solo pedir si no se ha decidido
-    if(typeof Notification !== 'undefined' && Notification.permission === 'default'){
-      // pedir permiso de manera no intrusiva (no obligatorio)
-      Notification.requestPermission().then(permission=>{
-        // si aceptó, mostramos notificación si hay track
-        if(permission === 'granted' && currentTrack){
-          updateMediaNotification();
-        }
-      }).catch(()=>{});
-    }
-  }
-  // Llamamos al init al cargar DOM
-  try{ initMediaControls(); }catch(e){}
-
-/* DOMContentLoaded end */
 }); // DOMContentLoaded end
 
 /* =====================
